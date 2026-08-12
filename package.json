@@ -1,0 +1,117 @@
+const { pool, query } = require('./db');
+const config = require('./config');
+
+const CATEGORIES = [
+  { slug: 'food', name: 'Еда', icon: '🍔' },
+  { slug: 'coffee', name: 'Кофе', icon: '☕' },
+  { slug: 'bars', name: 'Бары', icon: '🍺' },
+  { slug: 'clubs', name: 'Тусовки', icon: '🎉' },
+  { slug: 'culture', name: 'Культура', icon: '🎨' },
+  { slug: 'nature', name: 'Природа', icon: '🌳' },
+  { slug: 'events', name: 'События', icon: '🎵' },
+  { slug: 'shopping', name: 'Шопинг', icon: '💸' },
+];
+
+// Small demo dataset centered roughly on a generic city center.
+// Replace with real, licensed data before going to production —
+// this exists purely so the bot has something to show out of the box.
+const CENTER = { lat: 52.520008, lng: 13.404954 };
+
+function jitter(base, spreadKm) {
+  const spreadDeg = spreadKm / 111; // ~111km per degree latitude
+  return base + (Math.random() - 0.5) * 2 * spreadDeg;
+}
+
+const DEMO_PLACES = [
+  { name: 'Кофейня «Утро»', category: 'coffee', price: 1, desc: 'Тихое место с хорошим фильтр-кофе, есть розетки и вайфай.' },
+  { name: 'Бар «Полночь»', category: 'bars', price: 2, desc: 'Небольшой коктейльный бар, работает допоздна.' },
+  { name: 'Ресторан «Терраса»', category: 'food', price: 3, desc: 'Уютное место для ужина на двоих, летняя веранда.' },
+  { name: 'Бургерная «Огонь»', category: 'food', price: 1, desc: 'Недорогие бургеры, быстро и вкусно.' },
+  { name: 'Галерея «Свет»', category: 'culture', price: 1, desc: 'Небольшая галерея современного искусства.' },
+  { name: 'Парк у реки', category: 'nature', price: 1, desc: 'Хорошее место для прогулок и пробежек.' },
+  { name: 'Клуб «Резонанс»', category: 'clubs', price: 3, desc: 'Танцпол, живые диджей-сеты по выходным.' },
+  { name: 'Рынок «Суббота»', category: 'shopping', price: 2, desc: 'Локальные бренды и фермерские продукты.' },
+  { name: 'Кофейня «Зерно»', category: 'coffee', price: 2, desc: 'Спешелти кофе, немного людное по утрам.' },
+  { name: 'Винный бар «Лоза»', category: 'bars', price: 3, desc: 'Небольшая карта натуральных вин.' },
+];
+
+const DEMO_EVENTS = [
+  { name: 'Джазовый вечер', category: 'events', daysFromNow: 0, hour: 20, price: 'от 10€' },
+  { name: 'Маркет локальных дизайнеров', category: 'shopping', daysFromNow: 1, hour: 12, price: 'бесплатно' },
+  { name: 'Стендап-концерт', category: 'events', daysFromNow: 2, hour: 21, price: 'от 15€' },
+  { name: 'Выставка молодых художников', category: 'culture', daysFromNow: 3, hour: 18, price: 'бесплатно' },
+];
+
+async function seedCategories() {
+  const map = {};
+  for (const c of CATEGORIES) {
+    const { rows } = await query(
+      `INSERT INTO categories (slug, name, icon)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, icon = EXCLUDED.icon
+       RETURNING id, slug`,
+      [c.slug, c.name, c.icon]
+    );
+    map[rows[0].slug] = rows[0].id;
+  }
+  return map;
+}
+
+async function seedPlaces(catMap) {
+  const { rows: existing } = await query('SELECT COUNT(*)::int AS c FROM places WHERE is_demo = true');
+  if (existing[0].c > 0) {
+    console.log('Demo places already seeded, skipping.');
+    return;
+  }
+  for (const p of DEMO_PLACES) {
+    await query(
+      `INSERT INTO places (name, description, category_id, latitude, longitude, address, price_level, status, is_demo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'approved', true)`,
+      [
+        p.name,
+        p.desc,
+        catMap[p.category],
+        jitter(CENTER.lat, 3),
+        jitter(CENTER.lng, 3),
+        `${config.cityName}, демо-адрес`,
+        p.price,
+      ]
+    );
+  }
+  console.log(`Seeded ${DEMO_PLACES.length} demo places.`);
+}
+
+async function seedEvents(catMap) {
+  const { rows: existing } = await query('SELECT COUNT(*)::int AS c FROM events WHERE is_demo = true');
+  if (existing[0].c > 0) {
+    console.log('Demo events already seeded, skipping.');
+    return;
+  }
+  for (const e of DEMO_EVENTS) {
+    const start = new Date();
+    start.setDate(start.getDate() + e.daysFromNow);
+    start.setHours(e.hour, 0, 0, 0);
+    await query(
+      `INSERT INTO events (name, description, address, start_at, price, category_id, status, is_demo)
+       VALUES ($1, $2, $3, $4, $5, $6, 'approved', true)`,
+      [e.name, 'Демо-событие для проверки раздела «События».', `${config.cityName}, демо-площадка`, start, e.price, catMap[e.category]]
+    );
+  }
+  console.log(`Seeded ${DEMO_EVENTS.length} demo events.`);
+}
+
+async function run() {
+  const catMap = await seedCategories();
+  if (config.demoMode) {
+    await seedPlaces(catMap);
+    await seedEvents(catMap);
+  } else {
+    console.log('DEMO_MODE=false — skipping demo places/events (categories still seeded).');
+  }
+  await pool.end();
+}
+
+run().catch((err) => {
+  console.error('Seed failed:', err);
+  process.exit(1);
+});
